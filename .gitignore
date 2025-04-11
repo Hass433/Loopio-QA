@@ -1,0 +1,54 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python virtual environment
+venv/
+env/
+.venv/
+
+# Testing and pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs and output
+logs/
+*.log
+output/
+temp/
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Package and distribution files
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Data files
+data/
+
+# Environment files
+.env
+*.env
+
+# Temporary files
+*.tmp
+temp_*
+
+# Example files
+examples/
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Project specific exclusions (from your list)
+MANUAL_UPLOAD/
+.qodo
