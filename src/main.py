@@ -14,10 +14,10 @@ processor = TextProcessor(min_chunk_size=100, max_workers=100)
 generator = QAGenerator(max_workers=40,
                         hierarchy_excel_path="Loopio Library Structure.xlsx")  
 
-def display_qa_pairs(container, pairs: List[Dict]):
-    """Display all Q&A pairs on a single page"""
+def display_qa_batch(container, pairs: List[Dict], start_index: int = 0):
+    """Display a specific batch of Q&A pairs with proper indexing"""
     with container:
-        for i, pair in enumerate(pairs, start=1):
+        for i, pair in enumerate(pairs, start=start_index + 1):
             with st.expander(f"Q{i}: {pair['question']}"):
                 st.markdown(f"**Answer:** {pair['answer']}")
                 # Create metadata display with classification
@@ -48,11 +48,10 @@ def reset_app():
     
     # Re-initialize essential session state variables
     st.session_state.qa_pairs = []
+    st.session_state.batch_containers = []
     st.session_state.processing = False
     st.session_state.completed = False
-    st.session_state.previously_displayed_count = 0  # Also reset this counter
     st.session_state.file_uploader_key = str(time.time())  # Force file uploader to reset
-
 
 def main():
     st.set_page_config(page_title="Q&A Generator", layout="wide")
@@ -61,15 +60,15 @@ def main():
     # Initialize session state variables if they don't exist
     if 'qa_pairs' not in st.session_state:
         st.session_state.qa_pairs = []
+    if 'batch_containers' not in st.session_state:
+        st.session_state.batch_containers = []
     if 'processing' not in st.session_state:
         st.session_state.processing = False
     if 'completed' not in st.session_state:
         st.session_state.completed = False
     if 'file_uploader_key' not in st.session_state:
         st.session_state.file_uploader_key = "default"
-    if 'previously_displayed_count' not in st.session_state:
-        st.session_state.previously_displayed_count = 0
-    
+
     # Always show sidebar
     with st.sidebar:
         st.header("Upload Documents")
@@ -109,18 +108,22 @@ def main():
     # Main content area
     status_text = st.empty()
     progress_bar = st.progress(0)
-    display_container = st.container()
     
-    # Display existing Q&A pairs if available
-    if st.session_state.qa_pairs:
-        display_qa_pairs(display_container, st.session_state.qa_pairs)
+    # Main container for all batches
+    main_container = st.container()
+    
+    # Display existing batches if available
+    with main_container:
+        # Each batch container will be preserved in the layout
+        for batch_idx, container in enumerate(st.session_state.batch_containers):
+            st.empty()  # This helps maintain separation between batches
     
     # Handle generation process
     if generate_btn and uploaded_files and not st.session_state.processing:
         st.session_state.processing = True
         st.session_state.qa_pairs = []  # Reset Q&A pairs
+        st.session_state.batch_containers = []  # Reset batch containers
         st.session_state.completed = False
-        st.session_state.previously_displayed_count = 0  # Reset display counter
         
         temp_files = []
         try:
@@ -164,19 +167,33 @@ def main():
                     )
                     
                     if new_pairs:
+                        # Calculate start index for this batch (length of previous pairs)
+                        start_idx = len(st.session_state.qa_pairs)
+                        
                         # Add new pairs to the session state
                         st.session_state.qa_pairs.extend(new_pairs)
+                        
+                        # Update progress
                         progress = min(40 + (i / total_chunks * 60), 99)
                         progress_bar.progress(int(progress))
                         
-                        # Clear display container
-                        display_container.empty()
-                        
-                        # Display all Q&A pairs, including the new ones
-                        display_qa_pairs(display_container, st.session_state.qa_pairs)
-                        
-                        # Update counter for next batch
-                        st.session_state.previously_displayed_count = len(st.session_state.qa_pairs)
+                        # Create a new container for this batch
+                        with main_container:
+                            # Add a batch header
+                            batch_num = len(st.session_state.batch_containers) + 1
+                            st.subheader(f"Batch {batch_num} (Q{start_idx + 1}-Q{len(st.session_state.qa_pairs)})")
+                            
+                            # Create a container for this batch
+                            batch_container = st.container()
+                            
+                            # Display just the new pairs in this container
+                            display_qa_batch(batch_container, new_pairs, start_idx)
+                            
+                            # Store container reference for future reference
+                            st.session_state.batch_containers.append(batch_container)
+                            
+                            # Add a separator
+                            st.markdown("---")
                         
                         # Only small delay for UI updates
                         time.sleep(0.05)
