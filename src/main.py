@@ -50,7 +50,9 @@ def reset_app():
     st.session_state.qa_pairs = []
     st.session_state.processing = False
     st.session_state.completed = False
+    st.session_state.previously_displayed_count = 0  # Also reset this counter
     st.session_state.file_uploader_key = str(time.time())  # Force file uploader to reset
+
 
 def main():
     st.set_page_config(page_title="Q&A Generator", layout="wide")
@@ -65,7 +67,9 @@ def main():
         st.session_state.completed = False
     if 'file_uploader_key' not in st.session_state:
         st.session_state.file_uploader_key = "default"
-
+    if 'previously_displayed_count' not in st.session_state:
+        st.session_state.previously_displayed_count = 0
+    
     # Always show sidebar
     with st.sidebar:
         st.header("Upload Documents")
@@ -114,8 +118,9 @@ def main():
     # Handle generation process
     if generate_btn and uploaded_files and not st.session_state.processing:
         st.session_state.processing = True
-        st.session_state.qa_pairs = []
+        st.session_state.qa_pairs = []  # Reset Q&A pairs
         st.session_state.completed = False
+        st.session_state.previously_displayed_count = 0  # Reset display counter
         
         temp_files = []
         try:
@@ -159,13 +164,19 @@ def main():
                     )
                     
                     if new_pairs:
+                        # Add new pairs to the session state
                         st.session_state.qa_pairs.extend(new_pairs)
                         progress = min(40 + (i / total_chunks * 60), 99)
                         progress_bar.progress(int(progress))
                         
-                        # Clear and redisplay all Q&A pairs with the new batch included
+                        # Clear display container
                         display_container.empty()
+                        
+                        # Display all Q&A pairs, including the new ones
                         display_qa_pairs(display_container, st.session_state.qa_pairs)
+                        
+                        # Update counter for next batch
+                        st.session_state.previously_displayed_count = len(st.session_state.qa_pairs)
                         
                         # Only small delay for UI updates
                         time.sleep(0.05)
