@@ -152,20 +152,32 @@ def main():
                 progress_bar.progress(100)
             else:
                 for i in range(0, total_chunks, batch_size):
+                    # Track which questions we've already added to avoid duplicates
+                    if 'seen_questions' not in st.session_state:
+                        st.session_state.seen_questions = set()
+
                     batch_chunks = ques_gen_chunks[i:i+batch_size]
                     new_pairs = generator.generate_qa_pairs(
                         ques_gen_chunks=batch_chunks,
-                        ans_gen_chunks=ans_gen_chunks  # Using all answer chunks for context
+                        ans_gen_chunks=ans_gen_chunks
                     )
-                    
-                    if new_pairs:
-                        st.session_state.qa_pairs.extend(new_pairs)
+
+                    # Filter out duplicates before adding to the session state
+                    unique_new_pairs = []
+                    for pair in new_pairs:
+                        question = pair['question']
+                        if question not in st.session_state.seen_questions:
+                            st.session_state.seen_questions.add(question)
+                            unique_new_pairs.append(pair)
+
+                    if unique_new_pairs:
+                        st.session_state.qa_pairs.extend(unique_new_pairs)
                         progress = min(40 + (i / total_chunks * 60), 99)
                         progress_bar.progress(int(progress))
                         
-                        # Clear and redisplay all Q&A pairs with the new batch included
-                        display_container.empty()
-                        display_qa_pairs(display_container, st.session_state.qa_pairs)
+                        # Only display the new unique pairs, not everything again
+                        # This prevents repetitive display of the same content
+                        display_qa_pairs(display_container, unique_new_pairs)
                         
                         # Only small delay for UI updates
                         time.sleep(0.05)
