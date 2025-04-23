@@ -1,96 +1,131 @@
-# main.py (updated with automatic question generation)
 import os
 import time
-from typing import List
+from typing import List, Dict
 from langchain.schema import Document
 import streamlit as st
 from document_loader import DocumentLoader
 from text_processor import TextProcessor
 from qa_generator import QAGenerator
-from output_formatter import ExcelFormatter
-#from qa_evaluator import QAEvaluator
 import pandas as pd
 
 # Initialize components at module level
 loader = DocumentLoader.get_loader()
-processor = TextProcessor(ques_chunk_size=300, ques_chunk_overlap=50,
-                         ans_chunk_size=2000, ans_chunk_overlap=500)
-generator = QAGenerator(max_workers=40)
-formatter = ExcelFormatter()
+processor = TextProcessor(min_chunk_size=100, max_workers=100)
+generator = QAGenerator(max_workers=40,
+                        hierarchy_excel_path="Loopio Library Structure.xlsx")  
 
-def display_new_batches(container, qa_pairs):
-    """Display Q&A pairs in batches"""
-    batch_size = 15
-    total_batches = (len(qa_pairs) // batch_size) + 1
-    
+def display_qa_pairs(container, pairs: List[Dict]):
+    """Display all Q&A pairs on a single page"""
     with container:
-        for batch_num in range(total_batches):
-            batch_start = batch_num * batch_size
-            batch_end = min((batch_num + 1) * batch_size, len(qa_pairs))
-            batch = qa_pairs[batch_start:batch_end]
-            
-            st.subheader(f"Questions {batch_start+1}-{batch_end}")
-            
-            for i, pair in enumerate(batch, start=batch_start+1):
-                with st.expander(f"Q{i}: {pair['question']}"):
-                    st.markdown(f"**Answer:** {pair['answer']}")
-                    st.caption(f"Source: {pair.get('source', '')} | Pages: {pair.get('page', '')}")
-            
-            if batch_end < len(qa_pairs):
-                st.markdown("---")
+        for i, pair in enumerate(pairs, start=1):
+            with st.expander(f"Q{i}: {pair['question']}"):
+                st.markdown(f"**Answer:** {pair['answer']}")
+                # Create metadata display with classification
+                metadata_lines = [
+                    f"**Source:** {pair.get('source', '')}",
+                    f"**Pages:** {pair.get('page', '')}",
+                    f"**Stack:** {pair.get('stack', 'Unclassified')}",
+                    f"**Category:** {pair.get('category', 'General')}",
+                    f"**Subcategory:** {pair.get('subcategory', 'Other')}"
+                ]
+                
+                # Display metadata as a single block with line breaks
+                st.caption(" | ".join(metadata_lines))
 
 def calculate_target_pairs(documents: List[Document]) -> int:
     """Calculate target number of Q&A pairs based on document content"""
     total_words = sum(len(doc.page_content.split()) for doc in documents)
-    
-    # Base target: ~1 question per 500 words
     base_target = max(5, total_words // 500)
-    
-    # Adjust based on number of documents
     num_docs = len(documents)
     adjusted_target = base_target * (1 + num_docs // 3)
-    
-    # Cap at reasonable maximum
     return min(adjusted_target, 200)
+
+def reset_app():
+    """Reset the app state completely as if first opened"""
+    # Clear all session state variables
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+    
+    # Re-initialize essential session state variables
+    st.session_state.qa_pairs = []
+    st.session_state.processing = False
+    st.session_state.completed = False
+    st.session_state.file_uploader_key = str(time.time())  # Force file uploader to reset
 
 def main():
     st.set_page_config(page_title="Q&A Generator", layout="wide")
     st.title("Document Q&A Generator")
     
+    # Initialize session state variables if they don't exist
     if 'qa_pairs' not in st.session_state:
         st.session_state.qa_pairs = []
-    if 'displayed_batches' not in st.session_state:
-        st.session_state.displayed_batches = 0
+    if 'processing' not in st.session_state:
+        st.session_state.processing = False
+    if 'completed' not in st.session_state:
+        st.session_state.completed = False
+    if 'file_uploader_key' not in st.session_state:
+        st.session_state.file_uploader_key = "default"
 
-    status_text = st.empty()
-    progress_bar = st.progress(0)
-
+    # Always show sidebar
     with st.sidebar:
         st.header("Upload Documents")
+        # Use a dynamic key for the file uploader to force reset
         uploaded_files = st.file_uploader(
             "Upload PDF files", 
             type="pdf", 
-            accept_multiple_files=True
+            accept_multiple_files=True,
+            key=st.session_state.file_uploader_key
         )
         
-        generate_btn = st.button("Generate Q&A")
+        # Disable the generate button if already processing or no files uploaded
+        # Or if completed (we'll show the Reset button instead)
+        generate_disabled = st.session_state.processing or not uploaded_files or st.session_state.completed
+        
+        if not st.session_state.completed:
+            generate_btn = st.button(
+                "Generate Q&A", 
+                disabled=generate_disabled,
+                type="primary"
+            )
+        else:
+            generate_btn = False  # When completed, don't show Generate button
+            
+        # Show Reset button only when completed
+        if st.session_state.completed:
+            if st.button("Reset", type="primary"):
+                reset_app()
+                st.rerun()
+                
+        # Show processing status in sidebar
+        if st.session_state.processing:
+            st.info("Processing in progress...")
+        elif st.session_state.completed:
+            st.success(f"Generated {len(st.session_state.qa_pairs)} Q&A pairs.")
     
-    if not uploaded_files:
-        st.info("Please upload one or more PDF files to begin")
-        return
+    # Main content area
+    status_text = st.empty()
+    progress_bar = st.progress(0)
+    display_container = st.container()
     
-    if generate_btn:
+    # Display existing Q&A pairs if available
+    if st.session_state.qa_pairs:
+        display_qa_pairs(display_container, st.session_state.qa_pairs)
+    
+    # Handle generation process
+    if generate_btn and uploaded_files and not st.session_state.processing:
+        st.session_state.processing = True
         st.session_state.qa_pairs = []
-        st.session_state.displayed_batches = 0
+        st.session_state.completed = False
         
         temp_files = []
-        for uploaded_file in uploaded_files:
-            temp_file = f"temp_{uploaded_file.name}"
-            with open(temp_file, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            temp_files.append(temp_file)
-        
         try:
+            # Save uploaded files to temporary location
+            for uploaded_file in uploaded_files:
+                temp_file = f"temp_{uploaded_file.name}"
+                with open(temp_file, "wb") as f:
+                    f.write(uploaded_file.getbuffer())
+                temp_files.append(temp_file)
+            
             # Step 1: Document Loading
             status_text.text("Loading documents...")
             documents_dict = loader.load(temp_files)
@@ -99,32 +134,60 @@ def main():
                 documents.extend(doc_list)
             progress_bar.progress(20)
             
-            # Step 2: Text Processing
+            # Step 2: Text Processing - Performance improvements
             status_text.text("Processing document content...")
+            # Performance optimization: process in larger batches
             ques_gen_chunks, ans_gen_chunks = processor.process(documents)
             progress_bar.progress(40)
             
-            # Step 3: Q&A Generation
+            # Step 3: Q&A Generation - streaming batches with performance improvements
             status_text.text("Generating Q&A pairs...")
-            display_container = st.container()
             
-            # Generate all questions at once (number determined automatically)
-            new_pairs = generator.generate_qa_pairs(
-                ques_gen_chunks=ques_gen_chunks,
-                ans_gen_chunks=ans_gen_chunks
-            )
+            # We'll process in batches and display as we go
+            batch_size = 15
+            total_chunks = len(ques_gen_chunks)
             
-            if new_pairs:
-                st.session_state.qa_pairs = new_pairs
+            if total_chunks == 0:
+                status_text.warning("No content chunks were extracted. Check if your documents contain extractable text.")
+                progress_bar.progress(100)
+            else:
+                for i in range(0, total_chunks, batch_size):
+                    batch_chunks = ques_gen_chunks[i:i+batch_size]
+                    new_pairs = generator.generate_qa_pairs(
+                        ques_gen_chunks=batch_chunks,
+                        ans_gen_chunks=ans_gen_chunks  # Using all answer chunks for context
+                    )
+                    
+                    if new_pairs:
+                        st.session_state.qa_pairs.extend(new_pairs)
+                        progress = min(40 + (i / total_chunks * 60), 99)
+                        progress_bar.progress(int(progress))
+                        
+                        # Clear and redisplay all Q&A pairs with the new batch included
+                        display_container.empty()
+                        display_qa_pairs(display_container, st.session_state.qa_pairs)
+                        
+                        # Only small delay for UI updates
+                        time.sleep(0.05)
+                
                 progress_bar.progress(100)
                 status_text.text(f"Completed! Generated {len(st.session_state.qa_pairs)} Q&A pairs.")
-                display_new_batches(display_container, st.session_state.qa_pairs)
+            
+            st.session_state.completed = True
+            
+        except Exception as e:
+            status_text.error(f"Error: {str(e)}")
+            st.exception(e)
+            progress_bar.progress(0)
             
         finally:
             # Clean up temp files
             for temp_file in temp_files:
                 if os.path.exists(temp_file):
                     os.remove(temp_file)
+            st.session_state.processing = False
+            # Force rerun to update button states
+            st.rerun()
 
 if __name__ == "__main__":
     main()

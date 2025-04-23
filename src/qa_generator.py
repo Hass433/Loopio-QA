@@ -1,23 +1,23 @@
 """
-Parallel Q&A Generator Module with separate Q&A generation
+Parallel Q&A Generator Module with vector-based retrieval and separate Q&A generation
 """
 
 import os
-from typing import List, Dict, Tuple
+from typing import List, Dict
 from concurrent.futures import ThreadPoolExecutor
 from langchain.schema import Document
-from langchain_openai import AzureChatOpenAI
+from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
 from langchain.prompts import ChatPromptTemplate
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+from langchain_community.vectorstores import FAISS
 from dotenv import load_dotenv
-import streamlit as st
+from loopio_classifier import LoopioClassifier
+
 load_dotenv()
 
 class QAGenerator:
     """Generates Q&A pairs using separate strategies for question and answer generation"""
     
-    def __init__(self, max_workers: int = 5):
+    def __init__(self, max_workers: int = 5, hierarchy_excel_path: str = None):
         """
         Initialize with parallel processing capability
         
@@ -25,11 +25,19 @@ class QAGenerator:
             max_workers: Number of parallel threads to use
         """
         self.llm = AzureChatOpenAI(
-            openai_api_version=st.secrets["AZURE_OPENAI_API_VERSION"],
-            azure_deployment=st.secrets["AZURE_OPENAI_DEPLOYMENT"],
-            openai_api_key=st.secrets["AZURE_OPENAI_API_KEY"],
-            azure_endpoint=st.secrets["AZURE_OPENAI_ENDPOINT"],
+            openai_api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
+            azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT"),
+            openai_api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
             temperature=0
+        )
+        
+        # Initialize embeddings model for semantic search
+        self.embeddings = AzureOpenAIEmbeddings(
+            openai_api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
+            azure_deployment=os.getenv("AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT"),
+            openai_api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
         )
         
         self.max_workers = max_workers
@@ -71,32 +79,25 @@ class QAGenerator:
             
             Return the answer prefixed with "A: "."""
         )
+        self.classifier = None
+        if hierarchy_excel_path and os.path.exists(hierarchy_excel_path):
+            self.classifier = LoopioClassifier(hierarchy_excel_path)
     
-    #"Simple" Solution for multiple sources in answers 
-    def _get_most_relevant_chunks(self, question: str, chunks: List[Document], top_n: int = 3) -> List[Document]:
-        """Select top N most relevant chunks to the question using TF-IDF cosine similarity"""
+    def _get_relevant_chunks(self, question: str, chunks: List[Document], top_n: int = 3) -> List[Document]:
+        """Get most relevant chunks using vector embeddings with FAISS"""
         if not chunks:
             return []
-            
-        # Combine question and chunks for vectorization
-        texts = [question] + [chunk.page_content for chunk in chunks]
         
         try:
-            vectorizer = TfidfVectorizer()
-            tfidf_matrix = vectorizer.fit_transform(texts)
+            # Create a temporary vector store from chunks
+            vectorstore = FAISS.from_documents(chunks, self.embeddings)
             
-            # Calculate similarity between question and each chunk
-            similarities = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:])[0]
-            
-            # Pair chunks with their similarity scores and sort
-            scored_chunks = sorted(zip(chunks, similarities), key=lambda x: x[1], reverse=True)
-            
-            # Return top N chunks
-            return [chunk for chunk, score in scored_chunks[:top_n]]
+            # Retrieve relevant documents
+            return vectorstore.similarity_search(question, k=top_n)
             
         except Exception as e:
-            print(f"Error calculating chunk relevance: {str(e)}")
-            return chunks[:top_n]  # Fallback to first N chunks if error occurs
+            print(f"Error retrieving relevant chunks: {str(e)}")
+            return chunks[:top_n]  # Fallback to first N chunks
     
     def _generate_questions(self, chunk: Document, num_questions: int) -> List[str]:
         """Generate questions from a document chunk"""
@@ -122,28 +123,30 @@ class QAGenerator:
             return []
     
     def _generate_answer(self, question: str, context_chunks: List[Document]) -> Dict[str, str]:
-        """Generate answer for a question using top 3 most relevant context chunks"""
+        """Generate answer for a question using semantically relevant context chunks"""
         try:
-            # Select top 3 most relevant chunks
-            relevant_chunks = self._get_most_relevant_chunks(question, context_chunks, top_n=3)
+            # Select most relevant chunks using vector similarity
+            relevant_chunks = self._get_relevant_chunks(question, context_chunks, top_n=3)
             
             if not relevant_chunks:
                 return None
                 
-            # Track exactly which pages were used
+            # Track sources and pages
             used_pages = set()
             sources = set()
             context_pieces = []
             
             for chunk in relevant_chunks:
-                # Get the original page number (not the combined metadata)
-                page_num = str(chunk.metadata.get('orig_page_number', chunk.metadata.get('page_number', '?')))
-                used_pages.add(page_num)
+                # Get the page number from metadata
+                if 'page' in chunk.metadata:
+                    used_pages.add(str(int(chunk.metadata['page']) + 1))  # Convert to int, add 1, then back to str
+                
                 if 'source' in chunk.metadata:
                     sources.add(chunk.metadata['source'])
+                    
                 context_pieces.append(chunk.page_content)
             
-            # Generate answer using only the relevant context
+            # Generate answer using the relevant context
             response = self.llm.invoke(self.answer_prompt.format(
                 question=question,
                 context="\n\n".join(context_pieces)
@@ -153,17 +156,30 @@ class QAGenerator:
             if answer.startswith('A:'):
                 answer = answer[2:].strip()
             
-
-            sorted_pages = sorted(used_pages, key=lambda x: int(x))
-
             
-            return {
+            pair = {
                 'question': question,
                 'answer': answer,
                 'source': ", ".join(sources) if sources else "",
-                'page': ", ".join(sorted_pages) if used_pages else "?"
+                'page': ", ".join(used_pages) if used_pages else ""
             }
-            
+            # Add classification if classifier is available
+            if self.classifier:
+                classification = self.classifier.classify(question, answer)
+                pair.update({
+                    'stack': classification['stack'],
+                    'category': classification['category'],
+                    'subcategory': classification['subcategory']
+                })
+            else:
+                pair.update({
+                    'stack': 'Unclassified',
+                    'category': 'General',
+                    'subcategory': 'Other'
+                })
+                
+            return pair
+        
         except Exception as e:
             print(f"Error generating answer for '{question}': {str(e)}")
             return None
@@ -174,19 +190,16 @@ class QAGenerator:
         """Generate Q&A pairs using separate chunked documents"""
         qa_pairs = []
         
-        # Calculate dynamic number of questions per chunk based on content
+        # Calculate questions per chunk based on content length
         def calculate_questions_per_chunk(chunk: Document) -> int:
-            # Base number of questions
-            base_questions = 2
-            
             word_count = len(chunk.page_content.split())
             if word_count > 500:
-                return base_questions + 2
+                return 4
             elif word_count > 300:
-                return base_questions + 1
-            return base_questions
+                return 3
+            return 2
         
-        # First generate all potential questions
+        # First generate all questions in parallel
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             question_futures = []
             for chunk in ques_gen_chunks:
@@ -210,7 +223,7 @@ class QAGenerator:
                     print(f"Error in question generation: {str(e)}")
                     continue
         
-        # Then generate answers for each question using all context chunks
+        # Then generate answers for each question in parallel
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             answer_futures = []
             for question in all_questions:
