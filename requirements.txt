@@ -24,3 +24,9 @@ azure-identity>=1.13.0
 azure-storage-blob>=12.17.0
 
 scikit-learn
+
+
+langchain-experimental>=0.0.13  # For SemanticChunker
+scipy>=1.7.0  # Required for semantic similarity calculations
+faiss-cpu
+sentence-transformers>=2.2.2
