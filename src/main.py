@@ -11,7 +11,7 @@ import pandas as pd
 # Initialize components at module level
 loader = DocumentLoader.get_loader()
 processor = TextProcessor(min_chunk_size=100, max_workers=100)
-generator = QAGenerator(max_workers=40,
+generator = QAGenerator(max_workers=1000,
                         hierarchy_excel_path="Loopio Library Structure.xlsx")  
 
 def display_qa_batch(container, pairs: List[Dict], start_index: int = 0):
@@ -181,7 +181,7 @@ def main():
                         with main_container:
                             # Add a batch header
                             batch_num = len(st.session_state.batch_containers) + 1
-                            st.subheader(f"Batch {batch_num} (Q{start_idx + 1}-Q{len(st.session_state.qa_pairs)})")
+                            st.subheader(f"(Q{start_idx + 1}-Q{len(st.session_state.qa_pairs)})")
                             
                             # Create a container for this batch
                             batch_container = st.container()
