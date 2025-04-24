@@ -14,11 +14,14 @@ processor = TextProcessor(min_chunk_size=100, max_workers=100)
 generator = QAGenerator(max_workers=40,
                         hierarchy_excel_path="Loopio Library Structure.xlsx")  
 
-def display_qa_pairs(container, pairs: List[Dict]):
-    """Display all Q&A pairs on a single page"""
+def display_qa_pairs(container, pairs: List[Dict], start_idx: int, end_idx: int):
+    """Display a specific range of Q&A pairs"""
     with container:
-        for i, pair in enumerate(pairs, start=1):
-            with st.expander(f"Q{i}: {pair['question']}"):
+        for i in range(start_idx, end_idx):
+            if i >= len(pairs):
+                break
+            pair = pairs[i]
+            with st.expander(f"Q{i+1}: {pair['question']}"):
                 st.markdown(f"**Answer:** {pair['answer']}")
                 # Create metadata display with classification
                 metadata_lines = [
@@ -28,7 +31,6 @@ def display_qa_pairs(container, pairs: List[Dict]):
                     f"**Category:** {pair.get('category', 'General')}",
                     f"**Subcategory:** {pair.get('subcategory', 'Other')}"
                 ]
-                
                 # Display metadata as a single block with line breaks
                 st.caption(" | ".join(metadata_lines))
 
@@ -50,9 +52,8 @@ def reset_app():
     st.session_state.qa_pairs = []
     st.session_state.processing = False
     st.session_state.completed = False
-    st.session_state.previously_displayed_count = 0  # Also reset this counter
+    st.session_state.last_displayed_idx = 0  # Track the last displayed index
     st.session_state.file_uploader_key = str(time.time())  # Force file uploader to reset
-
 
 def main():
     st.set_page_config(page_title="Q&A Generator", layout="wide")
@@ -67,8 +68,8 @@ def main():
         st.session_state.completed = False
     if 'file_uploader_key' not in st.session_state:
         st.session_state.file_uploader_key = "default"
-    if 'previously_displayed_count' not in st.session_state:
-        st.session_state.previously_displayed_count = 0
+    if 'last_displayed_idx' not in st.session_state:
+        st.session_state.last_displayed_idx = 0
     
     # Always show sidebar
     with st.sidebar:
@@ -113,14 +114,19 @@ def main():
     
     # Display existing Q&A pairs if available
     if st.session_state.qa_pairs:
-        display_qa_pairs(display_container, st.session_state.qa_pairs)
+        display_qa_pairs(
+            display_container, 
+            st.session_state.qa_pairs,
+            0,  # Start from the beginning
+            st.session_state.last_displayed_idx  # Display up to last displayed index
+        )
     
     # Handle generation process
     if generate_btn and uploaded_files and not st.session_state.processing:
         st.session_state.processing = True
         st.session_state.qa_pairs = []  # Reset Q&A pairs
         st.session_state.completed = False
-        st.session_state.previously_displayed_count = 0  # Reset display counter
+        st.session_state.last_displayed_idx = 0  # Reset display counter
         
         temp_files = []
         try:
@@ -169,16 +175,22 @@ def main():
                         progress = min(40 + (i / total_chunks * 60), 99)
                         progress_bar.progress(int(progress))
                         
-                        # Clear display container
-                        display_container.empty()
+                        # Calculate the range to display
+                        start_idx = st.session_state.last_displayed_idx
+                        end_idx = len(st.session_state.qa_pairs)
                         
-                        # Display all Q&A pairs, including the new ones
-                        display_qa_pairs(display_container, st.session_state.qa_pairs)
+                        # Display only the new pairs in this batch
+                        display_qa_pairs(
+                            display_container, 
+                            st.session_state.qa_pairs,
+                            start_idx,
+                            end_idx
+                        )
                         
-                        # Update counter for next batch
-                        st.session_state.previously_displayed_count = len(st.session_state.qa_pairs)
+                        # Update the last displayed index
+                        st.session_state.last_displayed_idx = end_idx
                         
-                        # Only small delay for UI updates
+                        # Small delay for UI updates
                         time.sleep(0.05)
                 
                 progress_bar.progress(100)
